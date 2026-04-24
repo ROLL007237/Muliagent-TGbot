@@ -1,18 +1,22 @@
-import os
+import asyncio
 import json
+import os
 import threading
 import time
 from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.filters import Command
 from dotenv import load_dotenv
-import telegram
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
-# Импорты для LangChain (актуальные для версий 1.x)
-from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+
+from langchain_ollama import ChatOllama
 
 # Загружаем переменные окружения
 load_dotenv()
+
+session = AiohttpSession(proxy="socks5://127.0.0.1:1080")
 
 # Конфигурация
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -20,17 +24,17 @@ CHAT_ID = os.getenv('YOUR_CHAT_ID')
 
 # Проверка наличия ключей
 if not TELEGRAM_TOKEN:
-    raise ValueError("❌ TELEGRAM_BOT_TOKEN не найден в .env файле!")
+    raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env файле!")
 if not CHAT_ID:
-    raise ValueError("❌ YOUR_CHAT_ID не найден в .env файле!")
+    raise ValueError("YOUR_CHAT_ID не найден в .env файле!")
 
 # Хранилище встреч
 meetings = []
 meetings_file = "meetings.json"
 
-# Инициализация локальной модели Gemma 3 через Ollama
+# Инициализация локальной модели Gemma 4 через Ollama
 llm = ChatOllama(
-    model="gemma3:27b",
+    model="gemma4",
     temperature=0,
     num_predict=1024,
     top_k=10,
@@ -69,11 +73,11 @@ def load_meetings():
                 # Конвертируем строки времени обратно в datetime
                 for m in meetings:
                     m['time'] = datetime.fromisoformat(m['time'])
-            print(f"📅 Загружено {len(meetings)} встреч")
+            print(f"Загружено {len(meetings)} встреч")
         else:
             meetings = []
     except Exception as e:
-        print(f"❌ Ошибка загрузки: {e}")
+        print(f"Ошибка загрузки: {e}")
         meetings = []
 
 def save_meetings():
@@ -109,8 +113,8 @@ def parse_meeting_request(text):
         print(f"🔍 Распознано: {data}")
         return data
     except Exception as e:
-        print(f"❌ Ошибка парсинга: {e}")
-        print(f"   Текст ответа: {result if 'result' in locals() else 'нет ответа'}")
+        print(f"Ошибка парсинга: {e}")
+        print(f"Текст ответа: {result if 'result' in locals() else 'нет ответа'}")
         return None
 
 def add_meeting_from_text(text):
@@ -180,9 +184,9 @@ def add_meeting_from_text(text):
     response = f"✅ Запланировала {time_str}: {reminder_text}"
     return meeting, response
 
-def start(update, context):
+async def start(update):
     """Обработчик команды /start"""
-    update.message.reply_text(
+    await update.message.reply_text(
         "👋 Привет! Я умный бот с локальной Gemma 3 27B!\n\n"
         "Просто напиши мне:\n"
         "• 'встреча с Артемом в 18:15'\n"
@@ -194,7 +198,7 @@ def start(update, context):
         "/clear - очистить все встречи"
     )
 
-def handle_message(update, context):
+async def handle_message(update):
     """Обрабатывает текстовые сообщения"""
     text = update.message.text
     print(f"📨 Получено: {text}")
@@ -202,14 +206,14 @@ def handle_message(update, context):
     meeting, response = add_meeting_from_text(text)
     
     if meeting:
-        update.message.reply_text(response)
+        await update.message.reply_text(response)
     else:
-        update.message.reply_text(response or "❌ Не поняла запрос")
+        await update.message.reply_text(response or "❌ Не понял запрос")
 
-def list_meetings(update, context):
+async def list_meetings(update):
     """Показать все встречи"""
     if not meetings:
-        update.message.reply_text("📭 Нет запланированных встреч")
+        await update.message.reply_text("📭 Нет запланированных встреч")
         return
     
     now = datetime.now()
@@ -220,7 +224,7 @@ def list_meetings(update, context):
     active_meetings = [m for m in sorted_meetings if not m['notified']]
     
     if not active_meetings:
-        update.message.reply_text("📭 Нет активных встреч")
+        await update.message.reply_text("📭 Нет активных встреч")
         return
     
     for m in active_meetings[:10]:
@@ -229,18 +233,19 @@ def list_meetings(update, context):
             time_str = m['time'].strftime("%H:%M")
             text += f"• {time_str} (через {minutes_until} мин) - {m['text']}\n"
     
-    update.message.reply_text(text, parse_mode='Markdown')
+    await update.message.reply_text(text, parse_mode='Markdown')
 
-def clear_meetings(update, context):
+async def clear_meetings(update):
     """Очистить все встречи"""
     global meetings
     meetings = []
     save_meetings()
-    update.message.reply_text("🗑️ Все встречи удалены")
+    await update.message.reply_text("🗑️ Все встречи удалены")
 
 def check_reminders():
     """Поток для проверки напоминаний"""
-    bot = telegram.Bot(token=TELEGRAM_TOKEN)
+    bot = Bot(token=TELEGRAM_TOKEN)
+
     while True:
         try:
             now = datetime.now()
@@ -259,8 +264,8 @@ def check_reminders():
             print(f"❌ Ошибка в потоке напоминаний: {e}")
             time.sleep(5)
 
-def main():
-    print("🚀 Запуск умного бота с локальной Gemma 3 27B...")
+async def main():
+    print("Запуск бота....")
     
     # Загружаем сохраненные встречи
     load_meetings()
@@ -270,20 +275,17 @@ def main():
     reminder_thread.start()
     
     # Запускаем бота
-    updater = Updater(TELEGRAM_TOKEN, use_context=True)
-    dp = updater.dispatcher
-    
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("list", list_meetings))
-    dp.add_handler(CommandHandler("clear", clear_meetings))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    
-    print("✅ Бот запущен!")
-    print("📱 Пиши в Telegram, например: 'встреча с Артемом в 18:15'")
-    print(f"🤖 Используется локальная модель gemma3:27b через Ollama")
-    
-    updater.start_polling()
-    updater.idle()
+    bot = Bot(token=TELEGRAM_TOKEN, session=session)
+    dp = Dispatcher()
+
+    dp.message.register(start, Command("start"))
+    dp.message.register(list_meetings, Command("list"))
+    dp.message.register(clear_meetings, Command("clear"))
+    dp.message.register(handle_message, F.text & ~F.text.startswith("/"))
+
+    await dp.start_polling(bot)
+
+    print("Бот запущен!")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
